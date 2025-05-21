@@ -6,11 +6,17 @@ from airflow.utils.email import send_email
 import pandas as pd
 
 def send_daily_report(**context):
-    # 1. 获取当天所有任务记录
-    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    dag_runs = DagRun.find(execution_date_gte=today)
+    # 1. 获取当天所有DAG运行（正确方法）
+    today = datetime.utcnow().date()
+    all_dag_runs = DagRun.find()  # 获取全部记录
     
-    # 2. 用Pandas整理数据
+    # 2. 手动过滤当天数据
+    dag_runs = [
+        dr for dr in all_dag_runs 
+        if dr.execution_date.date() == today
+    ]
+    
+    # 3. 用Pandas整理数据
     data = []
     for dag_run in dag_runs:
         for task in dag_run.get_task_instances():
@@ -18,41 +24,44 @@ def send_daily_report(**context):
                 "DAG": task.dag_id,
                 "Task": task.task_id,
                 "Status": task.state,
-                "Runtime": f"{task.duration:.1f}s" if task.duration else "N/A",
-                "Execution Time": task.execution_date.strftime("%Y-%m-%d %H:%M")
+                "Runtime (s)": round(task.duration, 2) if task.duration else None,
+                "Exec Time": task.execution_date.strftime("%H:%M")
             })
     
     df = pd.DataFrame(data)
     
-    # 3. 生成邮件内容（Pandas表格自动转HTML）
-    email_content = f"""
-    <h3>📊 Airflow 每日任务报告 - {today.date()}</h3>
-    <p>共 <b>{len(df)}</b> 个任务执行：</p>
-    {df.to_html(index=False, classes="table table-striped")}
-    <style>
-        .table {{ border-collapse: collapse; width: 100%; }}
-        .table th, .table td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
-        .table-striped tr:nth-child(even) {{ background-color: #f2f2f2; }}
-    </style>
-    """
+    # 4. 生成邮件（空数据时友好提示）
+    if df.empty:
+        email_content = f"<p>⚠️ 今天 {today} 没有任务运行</p>"
+    else:
+        email_content = f"""
+        <h3>📊 Airflow Daily Report - {today}</h3>
+        <p>Total tasks: <b>{len(df)}</b></p>
+        {df.to_html(index=False, na_rep='N/A')}
+        <style>
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+            tr:hover {{ background-color: #f5f5f5; }}
+        </style>
+        """
     
-    # 4. 发送邮件
+    # 5. 发送邮件
     send_email(
-        to="your-email@example.com",  # 🔴 替换为你的邮箱
-        subject=f"Airflow Report - {today.date()}",
+        to="your-email@example.com",  # 替换为您的邮箱
+        subject=f"Airflow Report - {today}",
         html_content=email_content
     )
 
-# 定义每天凌晨运行的DAG
+# 定义DAG
 with DAG(
-    dag_id="daily_report_with_pandas",
-    schedule_interval="0 0 * * *",  # 每天UTC 00:00运行
+    dag_id="correct_daily_report",
+    schedule_interval="@daily",
     start_date=datetime(2023, 1, 1),
     catchup=False,
     default_args={"email_on_failure": False}
 ) as dag:
     
     PythonOperator(
-        task_id="send_daily_report",
+        task_id="send_report",
         python_callable=send_daily_report
     )
