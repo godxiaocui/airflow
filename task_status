@@ -1,73 +1,58 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.models import DagRun, TaskInstance
-from airflow.utils.state import State
-from airflow.utils.dates import days_ago
+from airflow.models import DagRun
 from datetime import datetime, timedelta
 from airflow.utils.email import send_email
 import pandas as pd
 
-def generate_daily_report(**context):
-    # 获取当天日期（UTC）
-    today = datetime.utcnow().date()
-    start_date = datetime.combine(today, datetime.min.time())
-    end_date = start_date + timedelta(days=1)  # 包含当天的结束时间
-
-    # 使用 ORM 查询当天所有 DAGRun
-    dag_runs = DagRun.find(
-        execution_date__gte=start_date,  # ✅ 正确写法是 execution_date__gte
-        execution_date__lt=end_date
-    )
+def send_daily_report(**context):
+    # 1. 获取当天所有任务记录
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    dag_runs = DagRun.find(execution_date_gte=today)
     
-    # 汇总任务状态
+    # 2. 用Pandas整理数据
     data = []
     for dag_run in dag_runs:
-        for task_instance in dag_run.get_task_instances():
+        for task in dag_run.get_task_instances():
             data.append({
-                "DAG ID": task_instance.dag_id,
-                "Task ID": task_instance.task_id,
-                "Execution Date": task_instance.execution_date,
-                "Status": task_instance.state,
-                "Try Number": task_instance.try_number,
-                "Duration": task_instance.duration
+                "DAG": task.dag_id,
+                "Task": task.task_id,
+                "Status": task.state,
+                "Runtime": f"{task.duration:.1f}s" if task.duration else "N/A",
+                "Execution Time": task.execution_date.strftime("%Y-%m-%d %H:%M")
             })
     
-    # 生成 DataFrame 报告
     df = pd.DataFrame(data)
     
-    # 按状态统计
-    status_stats = df["Status"].value_counts().to_string()
-    
-    # 生成 HTML 邮件内容
-    html_content = f"""
-    <h3>Airflow 每日任务报告 - {today}</h3>
-    <p>共 {len(df)} 个任务执行：</p>
-    <pre>{status_stats}</pre>
-    <h4>详细任务列表：</h4>
-    {df.to_html(index=False)}
+    # 3. 生成邮件内容（Pandas表格自动转HTML）
+    email_content = f"""
+    <h3>📊 Airflow 每日任务报告 - {today.date()}</h3>
+    <p>共 <b>{len(df)}</b> 个任务执行：</p>
+    {df.to_html(index=False, classes="table table-striped")}
+    <style>
+        .table {{ border-collapse: collapse; width: 100%; }}
+        .table th, .table td {{ padding: 8px; text-align: left; border-bottom: 1px solid #ddd; }}
+        .table-striped tr:nth-child(even) {{ background-color: #f2f2f2; }}
+    </style>
     """
     
-    # 发送邮件
+    # 4. 发送邮件
     send_email(
-        to="your-email@example.com",
-        subject=f"Airflow Daily Report - {today}",
-        html_content=html_content
+        to="your-email@example.com",  # 🔴 替换为你的邮箱
+        subject=f"Airflow Report - {today.date()}",
+        html_content=email_content
     )
 
-# 定义 DAG
+# 定义每天凌晨运行的DAG
 with DAG(
-    dag_id="daily_status_report",
-    schedule_interval="@daily",  # 每天运行一次
-    start_date=days_ago(1),
+    dag_id="daily_report_with_pandas",
+    schedule_interval="0 0 * * *",  # 每天UTC 00:00运行
+    start_date=datetime(2023, 1, 1),
     catchup=False,
-    default_args={
-        "owner": "airflow",
-        "email_on_failure": False,
-    }
+    default_args={"email_on_failure": False}
 ) as dag:
     
-    generate_report = PythonOperator(
-        task_id="generate_daily_report",
-        python_callable=generate_daily_report,
-        provide_context=True
+    PythonOperator(
+        task_id="send_daily_report",
+        python_callable=send_daily_report
     )
