@@ -10,9 +10,14 @@ import pandas as pd
 def generate_daily_report(**context):
     # 获取当天日期（UTC）
     today = datetime.utcnow().date()
-    
-    # 查询当天所有 DAGRun
-    dag_runs = DagRun.find(execution_date_gte=datetime.combine(today, datetime.min.time()))
+    start_date = datetime.combine(today, datetime.min.time())
+    end_date = start_date + timedelta(days=1)  # 包含当天的结束时间
+
+    # 使用 ORM 查询当天所有 DAGRun
+    dag_runs = DagRun.find(
+        execution_date__gte=start_date,  # ✅ 正确写法是 execution_date__gte
+        execution_date__lt=end_date
+    )
     
     # 汇总任务状态
     data = []
